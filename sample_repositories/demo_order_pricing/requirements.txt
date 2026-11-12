@@ -1,0 +1,2 @@
+# Runtime dependencies (pure standard library)
+pytest>=7.0.0

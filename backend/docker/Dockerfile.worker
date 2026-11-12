@@ -1,0 +1,24 @@
+# RepoPilot AI — Sandboxed Test Execution Worker Image
+FROM python:3.11-slim
+
+# Prevent python from writing pyc files and buffering stdout/stderr
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install core test dependencies into base environment
+RUN pip install --no-cache-dir pytest==8.1.1 pytest-cov==5.0.0
+
+# Create non-privileged user and working directory
+RUN groupadd -g 1000 appuser && \
+    useradd -u 1000 -g appuser -m -s /bin/bash appuser && \
+    mkdir -p /workspace && \
+    chown -R appuser:appuser /workspace
+
+WORKDIR /workspace
+USER appuser
+
+# Default entrypoint for test execution
+ENTRYPOINT ["pytest"]
+CMD ["-v", "--tb=short"]
