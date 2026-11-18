@@ -57,6 +57,9 @@ class GroqProvider(LLMProvider):
             "repository inventory, source snippets, and actual test output. Return a minimal, "
             "valid unified diff only for existing repository files. If evidence is insufficient, "
             "set is_insufficient_evidence=true and return an empty unified_diff.\n\n"
+            "Each modified file must contain valid --- and +++ headers "
+            "followed by at least one correctly numbered @@ hunk header. "
+            "Never return a plain code replacement instead of a unified diff.\n\n"
             f"Failure Summary:\n{input_data.failure_summary}\n\n"
             f"Repository Evidence:\n<untrusted_repo_content>\n{input_data.context_text}\n</untrusted_repo_content>\n"
         )

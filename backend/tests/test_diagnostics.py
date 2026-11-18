@@ -50,6 +50,11 @@ def test_auto_provider_does_not_silently_fall_back_to_fake(monkeypatch):
         def is_configured(self):
             return False, "GEMINI_API_KEY is not configured"
 
+    class UnconfiguredGroq:
+        def is_configured(self):
+            return False, "GROQ_API_KEY is not configured"
+
+    monkeypatch.setattr(factory, "GroqProvider", UnconfiguredGroq)
     monkeypatch.setattr(factory, "GeminiProvider", UnconfiguredGemini)
     monkeypatch.setattr(factory.settings, "LLM_PROVIDER", "auto")
 

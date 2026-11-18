@@ -35,6 +35,7 @@ export function DiagnosticReviewModal({
   isOpen,
   onClose,
   onUpdated,
+  onRunValidation,
 }: DiagnosticReviewModalProps) {
   const [activeTab, setActiveTab] = useState<"diff" | "evidence" | "risks">("diff");
   const [reviewNotes, setReviewNotes] = useState("");

@@ -1,4 +1,4 @@
-import os
+
 import logging
 from typing import Optional
 
@@ -13,40 +13,82 @@ logger = logging.getLogger("repopilot.llm")
 
 def get_llm_provider(force_provider: Optional[str] = None) -> LLMProvider:
     """
-    Factory function returning configured LLMProvider.
-    Supports 'groq', 'gemini', 'fake', or 'auto'.
-    """
-    provider_type = (force_provider or settings.LLM_PROVIDER).lower()
+    Return a configured LLM provider.
 
+    Supported modes:
+    - groq
+    - gemini
+    - fake
+    - auto
+
+    Auto mode never silently falls back to FakeLLMProvider.
+    """
+
+    provider_type = (force_provider or settings.LLM_PROVIDER).strip().lower()
+
+    # Explicit fake mode only.
     if provider_type == "fake":
         return FakeLLMProvider()
 
     if provider_type == "gemini":
-        return GeminiProvider()
+        provider = GeminiProvider()
+        configured, reason = provider.is_configured()
+
+        if not configured:
+            raise LLMError(
+                error_code="PROVIDER_NOT_CONFIGURED",
+                message=f"Gemini is not configured: {reason}",
+            )
+
+        return provider
 
     if provider_type == "groq":
-        return GroqProvider()
+        provider = GroqProvider()
+        configured, reason = provider.is_configured()
 
-    # 'auto' mode: prefer Groq when configured, then Gemini.
+        if not configured:
+            raise LLMError(
+                error_code="PROVIDER_NOT_CONFIGURED",
+                message=f"Groq is not configured: {reason}",
+            )
+
+        return provider
+
+    if provider_type != "auto":
+        raise LLMError(
+            error_code="INVALID_PROVIDER",
+            message=f"Unsupported LLM provider: {provider_type}",
+        )
+
+    # Auto mode: prefer Groq, then Gemini.
+    errors = []
+
     groq = GroqProvider()
     groq_configured, groq_reason = groq.is_configured()
+
     if groq_configured:
         return groq
 
+    errors.append(f"Groq: {groq_reason}")
+
     gemini = GeminiProvider()
-    configured, reason = gemini.is_configured()
-    if configured:
+    gemini_configured, gemini_reason = gemini.is_configured()
+
+    if gemini_configured:
         return gemini
 
-    # Never silently replace a requested real diagnosis with a simulated answer.
-    # This previously allowed canned fixture output to be mistaken for analysis of
-    # an uploaded external repository. Fake mode must be explicitly selected.
-    logger.error("No real LLM provider is configured: %s", reason)
+    errors.append(f"Gemini: {gemini_reason}")
+
+    message = (
+        "Real AI diagnosis is not configured. "
+        + "; ".join(errors)
+        + ". Configure GROQ_API_KEY or GEMINI_API_KEY. "
+        "Use LLM_PROVIDER=fake only for explicit demo/testing."
+    )
+
+    logger.error(message)
+
     raise LLMError(
         error_code="PROVIDER_NOT_CONFIGURED",
-        message=(
-            f"Real AI diagnosis is not configured: {groq_reason}; {reason} "
-            "Set GROQ_API_KEY and LLM_PROVIDER=groq (or auto), or set GEMINI_API_KEY and use gemini. "
-            "Use LLM_PROVIDER=fake only for deterministic demo/testing scenarios."
-        ),
+        message=message,
     )
