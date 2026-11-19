@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     EXECUTION_CPU_LIMIT: float = 1.0                     # CPU limit
     EXECUTION_MEMORY_LIMIT: str = "512m"                 # Memory limit
     EXECUTION_PIDS_LIMIT: int = 100                      # PID limit (prevent fork bombs)
+
+    # Remote GitHub-hosted runner (never expose these values to uploaded code)
+    GITHUB_ACTIONS_TOKEN: Optional[str] = None
+    GITHUB_ACTIONS_REPOSITORY: Optional[str] = None       # owner/repository containing the trusted workflow
+    GITHUB_ACTIONS_REF: str = "main"
+    RUNNER_CALLBACK_SECRET: Optional[str] = None
+    PUBLIC_API_BASE_URL: Optional[str] = None
+    GITHUB_RUNNER_WAIT_SECONDS: int = 360
     MAX_LOG_OUTPUT_BYTES: int = 500 * 1024               # 500 KB bounded log limit
 
     # Day 3 LLM Diagnosis & Patch Settings

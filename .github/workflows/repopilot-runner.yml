@@ -1,0 +1,91 @@
+name: RepoPilot isolated test runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: RepoPilot execution job ID
+        required: true
+        type: string
+      archive_b64:
+        description: Base64 ZIP workspace (small demo repositories only)
+        required: true
+        type: string
+      command_json:
+        description: JSON argv for the test command
+        required: true
+        type: string
+      setup_json:
+        description: JSON argv for dependency preparation
+        required: false
+        default: '[]'
+        type: string
+      timeout_seconds:
+        description: Test timeout
+        required: true
+        type: string
+      image:
+        description: Approved Python image
+        required: true
+        type: string
+      api_base_url:
+        description: Public RepoPilot API base URL
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repopilot-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout trusted runner scripts
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Execute repository in constrained Docker sandbox
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          ARCHIVE_B64: ${{ inputs.archive_b64 }}
+          COMMAND_JSON: ${{ inputs.command_json }}
+          SETUP_JSON: ${{ inputs.setup_json }}
+          TIMEOUT_SECONDS: ${{ inputs.timeout_seconds }}
+          IMAGE: ${{ inputs.image }}
+        run: python .github/scripts/run_repository.py
+      - name: Preserve execution result for callback job
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repopilot-result-${{ inputs.job_id }}
+          path: runner-result.json
+          if-no-files-found: warn
+          retention-days: 1
+
+  callback:
+    needs: execute
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout callback client
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download execution result
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: repopilot-result-${{ inputs.job_id }}
+      - name: Send signed result to RepoPilot API
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          API_BASE_URL: ${{ inputs.api_base_url }}
+          RUNNER_CALLBACK_SECRET: ${{ secrets.RUNNER_CALLBACK_SECRET }}
+          RESULT_FILE: runner-result.json
+        run: python .github/scripts/post_result.py
