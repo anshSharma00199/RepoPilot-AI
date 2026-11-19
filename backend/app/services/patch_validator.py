@@ -47,100 +47,199 @@ def extract_affected_files_from_diff(diff_text: str) -> List[str]:
     return sorted(list(affected))
 
 
-def apply_unified_diff_to_string(original: str, diff_text: str, target_file: str) -> Tuple[bool, str, Optional[str]]:
-    """
-    Applies unified diff hunks targeting `target_file` to the original string content.
-    Returns: (success, patched_content, error_message)
-    """
-    lines = original.splitlines()
-    orig_lines = list(lines)
 
-    # Find the hunk section for this target file
-    hunk_regex = re.compile(r"@@\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s*@@")
+def apply_unified_diff_to_string(
+    original: str,
+    diff_text: str,
+    target_file: str,
+) -> Tuple[bool, str, Optional[str]]:
+    """
+    Safely apply unified diff hunks to an existing file.
+
+    Supports:
+    - Standard numbered unified diff headers.
+    - Bare @@ headers when the old context uniquely identifies
+      the location in the original file.
+
+    Ambiguous or malformed patches are rejected.
+    """
+    original_lines = original.splitlines()
     diff_lines = diff_text.splitlines()
 
-    current_file = None
-    in_target_diff = False
+    hunk_regex = re.compile(
+        r"^@@\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s*@@"
+    )
+
     hunks = []
+    current_file = None
+    in_target_file = False
     current_hunk = None
 
+    def flush_hunk():
+        nonlocal current_hunk
+        if current_hunk is not None:
+            hunks.append(current_hunk)
+            current_hunk = None
+
     for line in diff_lines:
-        if line.startswith("--- ") or line.startswith("+++ "):
-            # Flush the previous file's final hunk before switching file headers.
-            if current_hunk is not None:
-                hunks.append(current_hunk)
-                current_hunk = None
-            path_part = line[4:].strip().split()[0]
-            if path_part.startswith("a/") or path_part.startswith("b/"):
-                path_part = path_part[2:]
-            path_part = path_part.replace("\\", "/").strip()
+        if line.startswith("--- "):
+            flush_hunk()
+            path = line[4:].split("\t", 1)[0].strip()
+            if path.startswith("a/"):
+                path = path[2:]
+            current_file = path.replace("\\", "/")
+            in_target_file = current_file == target_file
+            continue
 
-            if path_part == target_file:
-                in_target_diff = True
-            elif line.startswith("--- ") and path_part != target_file:
-                in_target_diff = False
+        if line.startswith("+++ "):
+            path = line[4:].split("\t", 1)[0].strip()
+            if path.startswith("b/"):
+                path = path[2:]
+            path = path.replace("\\", "/")
 
-        elif in_target_diff and line.startswith("@@"):
-            m = hunk_regex.search(line)
-            if m:
-                if current_hunk:
-                    hunks.append(current_hunk)
+            if path != target_file:
+                in_target_file = False
+            continue
+
+        if not in_target_file:
+            continue
+
+        if line.startswith("@@"):
+            flush_hunk()
+            match = hunk_regex.match(line)
+
+            if match:
                 current_hunk = {
-                    "orig_start": int(m.group(1)),
-                    "orig_count": int(m.group(2)) if m.group(2) else 1,
-                    "new_start": int(m.group(3)),
-                    "new_count": int(m.group(4)) if m.group(4) else 1,
+                    "orig_start": int(match.group(1)),
+                    "orig_count": (
+                        int(match.group(2))
+                        if match.group(2) is not None else 1
+                    ),
                     "lines": [],
+                    "numbered": True,
                 }
-        elif in_target_diff and current_hunk:
-            if line.startswith("+") or line.startswith("-") or line.startswith(" ") or line == "":
-                current_hunk["lines"].append(line)
+            elif line.strip() == "@@":
+                current_hunk = {
+                    "orig_start": None,
+                    "orig_count": None,
+                    "lines": [],
+                    "numbered": False,
+                }
+            else:
+                return (
+                    False,
+                    original,
+                    f"Malformed hunk header in '{target_file}': {line}",
+                )
+            continue
 
-    if current_hunk:
-        hunks.append(current_hunk)
+        if current_hunk is not None:
+            if line.startswith((" ", "+", "-")):
+                current_hunk["lines"].append(line)
+            elif line.startswith("\\ No newline"):
+                continue
+            else:
+                return (
+                    False,
+                    original,
+                    f"Malformed diff line in '{target_file}': {line}",
+                )
+
+    flush_hunk()
 
     if not hunks:
-        # Check if the diff was a direct replacement without hunk headers
-        return False, original, f"No parseable unified diff hunks found for '{target_file}'."
+        return (
+            False,
+            original,
+            f"No parseable unified diff hunks found for '{target_file}'.",
+        )
 
-    # Apply hunks sequentially from bottom up to preserve line indices
-    # Sort hunks in reverse order of orig_start
-    sorted_hunks = sorted(hunks, key=lambda h: h["orig_start"], reverse=True)
-    working_lines = list(orig_lines)
+    working_lines = list(original_lines)
 
-    for h in sorted_hunks:
-        start_idx = h["orig_start"] - 1  # 0-indexed
-        count = h["orig_count"]
+    # Apply in reverse order so earlier line positions remain stable.
+    for hunk in reversed(hunks):
+        old_lines = [
+            line[1:]
+            for line in hunk["lines"]
+            if line.startswith((" ", "-"))
+        ]
 
-        # Reconstruct old and new lines from hunk
-        old_hunk_lines = [l[1:] for l in h["lines"] if l.startswith("-") or l.startswith(" ")]
-        new_hunk_lines = [l[1:] for l in h["lines"] if l.startswith("+") or l.startswith(" ")]
+        new_lines = [
+            line[1:]
+            for line in hunk["lines"]
+            if line.startswith((" ", "+"))
+        ]
 
-        # Fuzzy match start index if exact index shifted slightly
-        match_idx = None
-        for offset in (0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5):
-            candidate = start_idx + offset
-            if candidate < 0:
-                continue
-            slice_lines = working_lines[candidate : candidate + len(old_hunk_lines)]
-            if slice_lines == old_hunk_lines:
-                match_idx = candidate
-                break
+        if not old_lines and not new_lines:
+            return False, original, "Empty diff hunk."
 
-        if match_idx is None:
-            # Fallback: check if old_hunk_lines is substring anywhere in file
-            old_block = "\n".join(old_hunk_lines)
-            full_text = "\n".join(working_lines)
-            if old_block in full_text:
-                replaced_text = full_text.replace(old_block, "\n".join(new_hunk_lines), 1)
-                working_lines = replaced_text.splitlines()
-                continue
-            return False, original, f"Hunk context mismatch at line {h['orig_start']}; could not locate original context lines."
+        if hunk["numbered"]:
+            expected_index = max(0, hunk["orig_start"] - 1)
 
-        # Replace slice
-        working_lines[match_idx : match_idx + len(old_hunk_lines)] = new_hunk_lines
+            if hunk["orig_count"] != len(old_lines):
+                return (
+                    False,
+                    original,
+                    "Hunk old-line count does not match its header.",
+                )
 
-    return True, "\n".join(working_lines) + ("\n" if original.endswith("\n") else ""), None
+            candidates = [
+                expected_index + offset
+                for offset in (0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5)
+            ]
+            matches = [
+                index
+                for index in candidates
+                if index >= 0
+                and working_lines[index:index + len(old_lines)] == old_lines
+            ]
+
+            if len(matches) != 1:
+                return (
+                    False,
+                    original,
+                    f"Hunk context is missing or ambiguous near line "
+                    f"{hunk['orig_start']}.",
+                )
+
+            match_index = matches[0]
+
+        else:
+            # Bare @@: only accept uniquely matching old context.
+            if not old_lines:
+                return (
+                    False,
+                    original,
+                    "Cannot safely locate a bare @@ hunk without old context.",
+                )
+
+            matches = []
+            search_limit = len(working_lines) - len(old_lines) + 1
+
+            for index in range(max(0, search_limit)):
+                if working_lines[index:index + len(old_lines)] == old_lines:
+                    matches.append(index)
+
+            if len(matches) != 1:
+                return (
+                    False,
+                    original,
+                    f"Bare @@ hunk context for '{target_file}' "
+                    f"matched {len(matches)} locations; exactly one is required.",
+                )
+
+            match_index = matches[0]
+
+        working_lines[
+            match_index:match_index + len(old_lines)
+        ] = new_lines
+
+    result = "\n".join(working_lines)
+
+    if original.endswith("\n"):
+        result += "\n"
+
+    return True, result, None
 
 
 def validate_proposed_patch(
